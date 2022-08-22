@@ -385,7 +385,7 @@ impl Client {
                 None => EventKind::MessageLike,
             };
 
-            let raw_event = &item.event.json();
+            let raw_event = item.event.json();
             let encryption_info = item.encryption_info.as_ref();
 
             self.call_event_handlers(room, raw_event, event_kind, &event_type, encryption_info)
@@ -403,7 +403,7 @@ impl Client {
                 None => EventKind::message_like_redacted(redacted),
             };
 
-            let raw_event = &item.event.json();
+            let raw_event = item.event.json();
             let encryption_info = item.encryption_info.as_ref();
 
             self.call_event_handlers(room, raw_event, event_kind, &event_type, encryption_info)

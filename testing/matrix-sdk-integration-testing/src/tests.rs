@@ -4,7 +4,6 @@ use anyhow::Result;
 use assign::assign;
 use matrix_sdk::{
     ruma::api::client::{account::register::v3::Request as RegistrationRequest, uiaa},
-    store::make_store_config,
     Client,
 };
 use once_cell::sync::Lazy;
@@ -21,7 +20,14 @@ pub fn test_server_conf() -> (String, String) {
     )
 }
 
-pub async fn get_client_for_user(username: String) -> Result<Client> {
+/// The StateStore to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Store {
+    Memory,
+    Sled,
+}
+
+pub async fn get_client_for_user(store: Store, username: String) -> Result<Client> {
     let mut users = USERS.lock().await;
     if let Some((client, _)) = users.get(&username) {
         return Ok(client.clone());
@@ -31,12 +37,13 @@ pub async fn get_client_for_user(username: String) -> Result<Client> {
 
     let tmp_dir = tempdir()?;
 
-    let client = Client::builder()
-        .user_agent("matrix-sdk-integation-tests")
-        .store_config(make_store_config(tmp_dir.path(), None)?)
-        .homeserver_url(homeserver_url)
-        .build()
-        .await?;
+    let mut builder =
+        Client::builder().user_agent("matrix-sdk-integation-tests").homeserver_url(homeserver_url);
+    builder = match store {
+        Store::Memory => builder,
+        Store::Sled => builder.sled_store(tmp_dir.path(), None)?,
+    };
+    let client = builder.build().await?;
     // safe to assume we have not registered this user yet, but ignore if we did
 
     if let Err(resp) = client.register(RegistrationRequest::new()).await {
@@ -59,3 +66,4 @@ pub async fn get_client_for_user(username: String) -> Result<Client> {
 }
 
 mod invitations;
+mod repeated_join;

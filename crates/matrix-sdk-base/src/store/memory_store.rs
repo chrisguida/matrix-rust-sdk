@@ -156,6 +156,9 @@ impl MemoryStore {
 
         for (room, events) in &changes.members {
             for event in events.values() {
+                self.stripped_joined_user_ids.remove(room);
+                self.stripped_invited_user_ids.remove(room);
+
                 match event.membership() {
                     MembershipState::Join => {
                         self.joined_user_ids
@@ -193,6 +196,7 @@ impl MemoryStore {
                     .entry(room.clone())
                     .or_default()
                     .insert(event.state_key().to_owned(), event.clone());
+                self.stripped_members.remove(room);
             }
         }
 
@@ -236,53 +240,59 @@ impl MemoryStore {
                         .entry(event_type.clone())
                         .or_default()
                         .insert(state_key.to_owned(), event.clone());
+                    self.stripped_room_state.remove(room);
                 }
             }
         }
 
+        for (room_id, info) in &changes.stripped_room_infos {
+            self.stripped_room_infos.insert(room_id.clone(), info.clone());
+            self.room_info.remove(room_id);
+        }
+
         for (room_id, room_info) in &changes.room_infos {
             self.room_info.insert(room_id.clone(), room_info.clone());
+            self.stripped_room_infos.remove(room_id);
         }
 
         for (sender, event) in &changes.presence {
             self.presence.insert(sender.clone(), event.clone());
         }
 
-        for (room_id, info) in &changes.stripped_room_infos {
-            self.stripped_room_infos.insert(room_id.clone(), info.clone());
-        }
-
         for (room, events) in &changes.stripped_members {
             for event in events.values() {
+                self.joined_user_ids.remove(room);
+                self.invited_user_ids.remove(room);
+
                 match event.content.membership {
                     MembershipState::Join => {
                         self.stripped_joined_user_ids
                             .entry(room.clone())
-                            .or_insert_with(DashSet::new)
+                            .or_default()
                             .insert(event.state_key.clone());
                         self.stripped_invited_user_ids
                             .entry(room.clone())
-                            .or_insert_with(DashSet::new)
+                            .or_default()
                             .remove(&event.state_key);
                     }
                     MembershipState::Invite => {
                         self.stripped_invited_user_ids
                             .entry(room.clone())
-                            .or_insert_with(DashSet::new)
+                            .or_default()
                             .insert(event.state_key.clone());
                         self.stripped_joined_user_ids
                             .entry(room.clone())
-                            .or_insert_with(DashSet::new)
+                            .or_default()
                             .remove(&event.state_key);
                     }
                     _ => {
                         self.stripped_joined_user_ids
                             .entry(room.clone())
-                            .or_insert_with(DashSet::new)
+                            .or_default()
                             .remove(&event.state_key);
                         self.stripped_invited_user_ids
                             .entry(room.clone())
-                            .or_insert_with(DashSet::new)
+                            .or_default()
                             .remove(&event.state_key);
                     }
                 }
@@ -291,6 +301,9 @@ impl MemoryStore {
                     .entry(room.clone())
                     .or_default()
                     .insert(event.state_key.clone(), event.clone());
+                self.members.remove(room);
+
+                self.profiles.remove(room);
             }
         }
 
@@ -303,6 +316,7 @@ impl MemoryStore {
                         .entry(event_type.clone())
                         .or_default()
                         .insert(state_key.to_owned(), event.clone());
+                    self.room_state.remove(room);
                 }
             }
         }

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -559,7 +559,7 @@ impl IndexeddbStateStore {
     }
 
     pub async fn save_changes(&self, changes: &StateChanges) -> Result<()> {
-        let mut stores: Vec<&'static str> = [
+        let mut stores: HashSet<&'static str> = [
             (changes.sync_token.is_some(), KEYS::SYNC_TOKEN),
             (changes.session.is_some(), KEYS::SESSION),
             (!changes.ambiguity_maps.is_empty(), KEYS::DISPLAY_NAMES),
@@ -584,16 +584,22 @@ impl IndexeddbStateStore {
             stores.extend([
                 KEYS::PROFILES,
                 KEYS::MEMBERS,
+                KEYS::STRIPPED_MEMBERS,
                 KEYS::INVITED_USER_IDS,
+                KEYS::STRIPPED_INVITED_USER_IDS,
                 KEYS::JOINED_USER_IDS,
+                KEYS::STRIPPED_JOINED_USER_IDS,
             ])
         }
 
         if !changes.stripped_members.is_empty() {
             stores.extend([
                 KEYS::STRIPPED_MEMBERS,
+                KEYS::MEMBERS,
                 KEYS::STRIPPED_INVITED_USER_IDS,
+                KEYS::INVITED_USER_IDS,
                 KEYS::STRIPPED_JOINED_USER_IDS,
+                KEYS::JOINED_USER_IDS,
             ])
         }
 
@@ -615,6 +621,7 @@ impl IndexeddbStateStore {
             return Ok(());
         }
 
+        let stores: Vec<&'static str> = stores.into_iter().collect();
         let tx =
             self.inner.transaction_on_multi_with_mode(&stores, IdbTransactionMode::Readwrite)?;
 
@@ -655,24 +662,40 @@ impl IndexeddbStateStore {
         }
 
         if !changes.state.is_empty() {
-            let store = tx.object_store(KEYS::ROOM_STATE)?;
+            let state_store = tx.object_store(KEYS::ROOM_STATE)?;
+            let stripped_state_store = tx.object_store(KEYS::STRIPPED_ROOM_STATE)?;
             for (room, event_types) in &changes.state {
                 for (event_type, events) in event_types {
                     for (state_key, event) in events {
                         let key = self.encode_key(KEYS::ROOM_STATE, (room, event_type, state_key));
-                        store.put_key_val(&key, &self.serialize_event(&event)?)?;
+                        state_store.put_key_val(&key, &self.serialize_event(&event)?)?;
+                        stripped_state_store.delete(&key)?;
                     }
                 }
             }
         }
 
+        if !changes.stripped_room_infos.is_empty() {
+            let stripped_room_store = tx.object_store(KEYS::STRIPPED_ROOM_INFOS)?;
+            let room_store = tx.object_store(KEYS::ROOM_INFOS)?;
+            for (room_id, info) in &changes.stripped_room_infos {
+                stripped_room_store.put_key_val(
+                    &self.encode_key(KEYS::STRIPPED_ROOM_INFOS, room_id),
+                    &self.serialize_event(&info)?,
+                )?;
+                room_store.delete(&self.encode_key(KEYS::ROOM_INFOS, room_id))?;
+            }
+        }
+
         if !changes.room_infos.is_empty() {
-            let store = tx.object_store(KEYS::ROOM_INFOS)?;
+            let room_store = tx.object_store(KEYS::ROOM_INFOS)?;
+            let stripped_room_store = tx.object_store(KEYS::STRIPPED_ROOM_INFOS)?;
             for (room_id, room_info) in &changes.room_infos {
-                store.put_key_val(
+                room_store.put_key_val(
                     &self.encode_key(KEYS::ROOM_INFOS, room_id),
                     &self.serialize_event(&room_info)?,
                 )?;
+                stripped_room_store.delete(&self.encode_key(KEYS::STRIPPED_ROOM_INFOS, room_id))?;
             }
         }
 
@@ -686,62 +709,66 @@ impl IndexeddbStateStore {
             }
         }
 
-        if !changes.stripped_room_infos.is_empty() {
-            let store = tx.object_store(KEYS::STRIPPED_ROOM_INFOS)?;
-            for (room_id, info) in &changes.stripped_room_infos {
-                store.put_key_val(
-                    &self.encode_key(KEYS::STRIPPED_ROOM_INFOS, room_id),
-                    &self.serialize_event(&info)?,
-                )?;
-            }
-        }
-
         if !changes.stripped_members.is_empty() {
-            let store = tx.object_store(KEYS::STRIPPED_MEMBERS)?;
-            let joined = tx.object_store(KEYS::STRIPPED_JOINED_USER_IDS)?;
-            let invited = tx.object_store(KEYS::STRIPPED_INVITED_USER_IDS)?;
+            let stripped_members = tx.object_store(KEYS::STRIPPED_MEMBERS)?;
+            let members = tx.object_store(KEYS::MEMBERS)?;
+            let stripped_joined = tx.object_store(KEYS::STRIPPED_JOINED_USER_IDS)?;
+            let joined = tx.object_store(KEYS::JOINED_USER_IDS)?;
+            let stripped_invited = tx.object_store(KEYS::STRIPPED_INVITED_USER_IDS)?;
+            let invited = tx.object_store(KEYS::INVITED_USER_IDS)?;
             for (room, events) in &changes.stripped_members {
                 for event in events.values() {
                     let key = (room, &event.state_key);
 
                     match event.content.membership {
                         MembershipState::Join => {
-                            joined.put_key_val_owned(
+                            stripped_joined.put_key_val_owned(
                                 &self.encode_key(KEYS::STRIPPED_JOINED_USER_IDS, key),
                                 &self.serialize_event(&event.state_key)?,
                             )?;
-                            invited
+                            joined.delete(&self.encode_key(KEYS::JOINED_USER_IDS, key))?;
+                            stripped_invited
                                 .delete(&self.encode_key(KEYS::STRIPPED_INVITED_USER_IDS, key))?;
+                            invited.delete(&self.encode_key(KEYS::INVITED_USER_IDS, key))?;
                         }
                         MembershipState::Invite => {
-                            invited.put_key_val_owned(
+                            stripped_invited.put_key_val_owned(
                                 &self.encode_key(KEYS::STRIPPED_INVITED_USER_IDS, key),
                                 &self.serialize_event(&event.state_key)?,
                             )?;
-                            joined.delete(&self.encode_key(KEYS::STRIPPED_JOINED_USER_IDS, key))?;
+                            invited.delete(&self.encode_key(KEYS::INVITED_USER_IDS, key))?;
+                            stripped_joined
+                                .delete(&self.encode_key(KEYS::STRIPPED_JOINED_USER_IDS, key))?;
+                            joined.delete(&self.encode_key(KEYS::JOINED_USER_IDS, key))?;
                         }
                         _ => {
-                            joined.delete(&self.encode_key(KEYS::STRIPPED_JOINED_USER_IDS, key))?;
-                            invited
+                            stripped_joined
+                                .delete(&self.encode_key(KEYS::STRIPPED_JOINED_USER_IDS, key))?;
+                            joined.delete(&self.encode_key(KEYS::JOINED_USER_IDS, key))?;
+                            stripped_invited
                                 .delete(&self.encode_key(KEYS::STRIPPED_INVITED_USER_IDS, key))?;
+                            invited.delete(&self.encode_key(KEYS::INVITED_USER_IDS, key))?;
                         }
                     }
-                    store.put_key_val(
+                    stripped_members.put_key_val(
                         &self.encode_key(KEYS::STRIPPED_MEMBERS, key),
                         &self.serialize_event(&event)?,
                     )?;
+                    members.delete(&self.encode_key(KEYS::MEMBERS, key))?;
                 }
             }
         }
 
         if !changes.stripped_state.is_empty() {
-            let store = tx.object_store(KEYS::STRIPPED_ROOM_STATE)?;
+            let stripped_state = tx.object_store(KEYS::STRIPPED_ROOM_STATE)?;
+            let state = tx.object_store(KEYS::ROOM_STATE)?;
             for (room, event_types) in &changes.stripped_state {
                 for (event_type, events) in event_types {
                     for (state_key, event) in events {
                         let key = self
                             .encode_key(KEYS::STRIPPED_ROOM_STATE, (room, event_type, state_key));
-                        store.put_key_val(&key, &self.serialize_event(&event)?)?;
+                        stripped_state.put_key_val(&key, &self.serialize_event(&event)?)?;
+                        state.delete(&key)?;
                     }
                 }
             }
@@ -750,8 +777,11 @@ impl IndexeddbStateStore {
         if !changes.members.is_empty() {
             let profiles_store = tx.object_store(KEYS::PROFILES)?;
             let joined = tx.object_store(KEYS::JOINED_USER_IDS)?;
+            let stripped_joined = tx.object_store(KEYS::STRIPPED_JOINED_USER_IDS)?;
             let invited = tx.object_store(KEYS::INVITED_USER_IDS)?;
+            let stripped_invited = tx.object_store(KEYS::STRIPPED_INVITED_USER_IDS)?;
             let members = tx.object_store(KEYS::MEMBERS)?;
+            let stripped_members = tx.object_store(KEYS::STRIPPED_MEMBERS)?;
 
             for (room, events) in &changes.members {
                 let profile_changes = changes.profiles.get(room);
@@ -765,18 +795,30 @@ impl IndexeddbStateStore {
                                 &self.encode_key(KEYS::JOINED_USER_IDS, key),
                                 &self.serialize_event(event.state_key())?,
                             )?;
+                            stripped_joined
+                                .delete(&self.encode_key(KEYS::STRIPPED_JOINED_USER_IDS, key))?;
                             invited.delete(&self.encode_key(KEYS::INVITED_USER_IDS, key))?;
+                            stripped_invited
+                                .delete(&self.encode_key(KEYS::STRIPPED_INVITED_USER_IDS, key))?;
                         }
                         MembershipState::Invite => {
                             invited.put_key_val_owned(
                                 &self.encode_key(KEYS::INVITED_USER_IDS, key),
                                 &self.serialize_event(event.state_key())?,
                             )?;
+                            stripped_invited
+                                .delete(&self.encode_key(KEYS::STRIPPED_INVITED_USER_IDS, key))?;
                             joined.delete(&self.encode_key(KEYS::JOINED_USER_IDS, key))?;
+                            stripped_joined
+                                .delete(&self.encode_key(KEYS::STRIPPED_JOINED_USER_IDS, key))?;
                         }
                         _ => {
                             joined.delete(&self.encode_key(KEYS::JOINED_USER_IDS, key))?;
+                            stripped_joined
+                                .delete(&self.encode_key(KEYS::STRIPPED_JOINED_USER_IDS, key))?;
                             invited.delete(&self.encode_key(KEYS::INVITED_USER_IDS, key))?;
+                            stripped_invited
+                                .delete(&self.encode_key(KEYS::STRIPPED_INVITED_USER_IDS, key))?;
                         }
                     }
 
@@ -784,6 +826,7 @@ impl IndexeddbStateStore {
                         &self.encode_key(KEYS::MEMBERS, key),
                         &self.serialize_event(&event)?,
                     )?;
+                    stripped_members.delete(&self.encode_key(KEYS::STRIPPED_MEMBERS, key))?;
 
                     if let Some(profile) = profile_changes.and_then(|p| p.get(event.state_key())) {
                         profiles_store.put_key_val_owned(

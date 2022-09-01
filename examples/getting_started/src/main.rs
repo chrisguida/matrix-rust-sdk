@@ -121,6 +121,18 @@ async fn on_stripped_state_member(
         return;
     }
 
+    match room {
+        Room::Invited(_) => {
+            println!("Room is of type Invited")
+        }
+        Room::Joined(_) => {
+            println!("Room is of type Joined")
+        }
+        Room::Left(_) => {
+            println!("Room is of type Left")
+        }
+    }
+
     // looks like the room is an invited room, let's attempt to join then
     if let Room::Invited(room) = room {
         // The event handlers are called before the next sync begins, but
